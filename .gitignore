@@ -1,0 +1,26 @@
+# Gradle
+.gradle/
+.kotlin/
+build/
+app/build/
+
+# IDE
+.idea/
+*.iml
+captures/
+
+# 本地环境配置（各机器 SDK 路径不同）
+local.properties
+
+# 调试与临时产物
+.screenshots/
+gradle_wrapper_tmp/
+*.log
+
+# APK 不进版本库（通过 Gitea Release 附件分发）
+*.apk
+
+# 系统文件
+.DS_Store
+Thumbs.db
+logo2.png

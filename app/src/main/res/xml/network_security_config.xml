@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全配置（设计文档 §5.3 / §12 的显式取舍）：
+  - 主地址为局域网 HTTP 明文（EasyTier 虚拟网自带加密，风险已知悉）
+  - 备地址为 DDNS HTTPS（仅系统信任证书，自签不支持）
+  因此全局放行明文流量，HTTPS 走系统信任链。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
