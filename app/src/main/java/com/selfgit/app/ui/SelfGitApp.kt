@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -92,6 +93,12 @@ fun SelfGitApp() {
     var tab by remember { mutableStateOf(Destination.APPS) }
     var showReauth by remember { mutableStateOf(false) }
     var openedRepo by remember { mutableStateOf<GiteaRepo?>(null) }
+
+    // 系统分享 APK → 自动切到上传页并装载
+    val shareUri by com.selfgit.app.ShareInbox.uri.collectAsState()
+    LaunchedEffect(shareUri) {
+        if (shareUri != null) tab = Destination.UPLOAD
+    }
 
     // ---- 数据状态 ----
     var repos by remember { mutableStateOf<List<GiteaRepo>>(emptyList()) }
@@ -299,6 +306,47 @@ fun SelfGitApp() {
 
 
     // ---- 附件下载（阶段 1，P3 流程）----
+
+    /**
+     * 复制文件到公共下载目录 Downloads/SelfGit/（MediaStore，API 29+）。
+     * 同名旧文件先删除再写入（每次下载视为覆盖）。低版本返回 null（保留私有目录）。
+     * @return 展示用相对路径（如 "Download/SelfGit/xxx.apk"），失败 null。
+     */
+    fun copyToPublicDownloads(src: File, name: String): String? {
+        if (android.os.Build.VERSION.SDK_INT < 29) return null
+        return runCatching {
+            val resolver = context.contentResolver
+            val downloads = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val relPath = android.os.Environment.DIRECTORY_DOWNLOADS + "/SelfGit"
+            val proj = arrayOf(android.provider.MediaStore.MediaColumns._ID)
+            // 清除同名旧条目（覆盖语义）
+            resolver.query(
+                downloads, proj,
+                "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH}=? AND ${android.provider.MediaStore.MediaColumns.DISPLAY_NAME}=?",
+                arrayOf("$relPath/", name), null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getLong(0)
+                    runCatching {
+                        resolver.delete(
+                            android.content.ContentUris.withAppendedId(downloads, id), null, null
+                        )
+                    }
+                }
+            }
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, relPath)
+            }
+            val uri = resolver.insert(downloads, values) ?: return null
+            resolver.openOutputStream(uri)?.use { out ->
+                src.inputStream().use { it.copyTo(out) }
+            } ?: return null
+            "$relPath/$name"
+        }.getOrNull()
+    }
+
     fun downloadAsset(repo: GiteaRepo, release: GiteaRelease, assetId: Long, assetName: String) {
         val url = activeUrl ?: return
         val token = settings.roToken ?: return
@@ -328,8 +376,15 @@ fun SelfGitApp() {
                         )
                     )
                 }
+                // 同步一份到公共 Downloads/SelfGit/（API 29+），方便文件管理器查看与备份
+                val publicPath = withContext(Dispatchers.IO) {
+                    copyToPublicDownloads(dest, assetName)
+                }
                 downloads[assetId] = DownloadUi.Done(dest)
                 withContext(Dispatchers.Main) {
+                    if (publicPath != null) {
+                        Toast.makeText(context, "已保存到 $publicPath", Toast.LENGTH_LONG).show()
+                    }
                     installApk(dest)
                 }
             } catch (e: ApiException) {
@@ -471,7 +526,9 @@ fun SelfGitApp() {
                                     client = client,
                                     activeUrl = activeUrl,
                                     history = uploadHistory,
-                                    onUploaded = { refresh(force = true) }
+                                    onUploaded = { refresh(force = true) },
+                                    shareUri = shareUri,
+                                    onShareConsumed = { com.selfgit.app.ShareInbox.uri.value = null }
                                 )
                                 Destination.SETTINGS -> SettingsScreen(
                                     settings = settings,
@@ -561,8 +618,9 @@ private suspend fun resolveUrl(
     host: com.selfgit.app.data.HostConfig
 ): String = withContext(Dispatchers.IO) {
     val candidates = buildList {
-        settings.lastGoodUrl?.let { add(it) }
-        add(host.primaryUrl)
+        settings.lastGoodUrl?.takeIf { it.isNotBlank() }?.let { add(it) }
+        // 主/备独立：任一为空白（未配置或未通过探测）时跳过，不影响另一个
+        if (host.primaryUrl.isNotBlank()) add(host.primaryUrl)
         if (host.backupUrl.isNotBlank()) add(host.backupUrl)
     }.distinct()
 

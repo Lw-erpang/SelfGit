@@ -664,16 +664,20 @@ class GiteaClient {
                 .url("$url/api/v1/repos/$owner/$repo/contents")
                 .header("Authorization", auth)
                 .build()
-            val iconName = call(listRequest) { bodyStr ->
-                val arr = JSONArray(bodyStr)
-                val iconExts = setOf("png", "jpg", "jpeg", "webp")
-                (0 until arr.length())
-                    .map { i -> arr.getJSONObject(i).optString("name") }
-                    .firstOrNull { name ->
+                val iconName = call(listRequest) { bodyStr ->
+                    val arr = JSONArray(bodyStr)
+                    val iconExts = setOf("png", "jpg", "jpeg", "webp")
+                    val names = (0 until arr.length())
+                        .map { i -> arr.getJSONObject(i).optString("name") }
+                    // 优先 icon.*，回退 logo.*（常见 README 配图即 logo）
+                    names.firstOrNull { name ->
                         val ext = name.substringAfterLast('.', "").lowercase()
                         name.startsWith("icon.", ignoreCase = true) && ext in iconExts
+                    } ?: names.firstOrNull { name ->
+                        val ext = name.substringAfterLast('.', "").lowercase()
+                        name.startsWith("logo.", ignoreCase = true) && ext in iconExts
                     }
-            } ?: return null
+                } ?: return null
 
             val encoded = java.net.URLEncoder.encode(iconName, "UTF-8")
             val fileRequest = Request.Builder()

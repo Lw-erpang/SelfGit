@@ -145,6 +145,13 @@ object InstallRouter {
 
     // ---- 后端：第三方安装器 ----
 
+    /**
+     * 接管型安装器（LSPosed 模块，hook 系统安装器实现接管）：
+     * 自身不注册安装 intent filter，无法定向唤起；选中后走系统安装路径，
+     * 由 hook 改变安装行为（如爱玩机-安装卸载器接管）。
+     */
+    val HOOKED_INSTALLERS = setOf("com.modify.installer")
+
     private fun thirdPartyInstall(context: Context, file: File, pkg: String): InstallOutcome {
         if (pkg.isBlank()) {
             return fallback(InstallerType.THIRD_PARTY, "未选择第三方安装器（请在设置页中选择）")
@@ -152,6 +159,10 @@ object InstallRouter {
         if (ApkInstaller.installedVersion(context, pkg) == null) {
             // §11.5：第三方安装器包名被卸载后自动回退系统默认并提示
             return fallback(InstallerType.THIRD_PARTY, "第三方安装器（$pkg）已卸载，自动回退系统安装器")
+        }
+        // 接管型：无安装 activity，走系统安装器（被 hook 接管）
+        if (pkg in HOOKED_INSTALLERS) {
+            return systemInstall(context, file, InstallerType.THIRD_PARTY, "已唤起系统安装器（由接管型安装器处理）")
         }
         val uri = FileProvider.getUriForFile(context, AUTHORITY, file)
         val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {

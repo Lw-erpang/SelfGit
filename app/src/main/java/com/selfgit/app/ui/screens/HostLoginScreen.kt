@@ -89,6 +89,10 @@ fun HostLoginScreen(
     // ---- 流程状态 ----
     var probing by remember { mutableStateOf(false) }
     var probeResult by remember { mutableStateOf<String?>(null) }
+    // 主/备各自独立探测结果（保存互不覆盖：只有探测通过的地址才落盘）
+    var probePrimaryOk by remember { mutableStateOf(false) }
+    var probeBackupOk by remember { mutableStateOf(false) }
+    var probeActiveUrl by remember { mutableStateOf<String?>(null) }
     var working by remember { mutableStateOf(false) }
     var statusLine by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -155,6 +159,9 @@ fun HostLoginScreen(
                 onValueChange = {
                     primaryUrl = it
                     probeResult = null
+                    probePrimaryOk = false
+                    probeBackupOk = false
+                    probeActiveUrl = null
                 },
                 label = "主地址（局域网 HTTP）",
                 placeholder = "http://192.168.x.x:3000",
@@ -170,6 +177,9 @@ fun HostLoginScreen(
                 onValueChange = {
                     backupUrl = it
                     probeResult = null
+                    probePrimaryOk = false
+                    probeBackupOk = false
+                    probeActiveUrl = null
                 },
                 label = "备地址（DDNS HTTPS，可选）",
                 placeholder = "https://gitea.example.com",
@@ -199,10 +209,13 @@ fun HostLoginScreen(
                             error = null
                             probeResult = null
                             try {
-                                val version = withContext(Dispatchers.IO) {
-                                    probeWithFallback(client, normalizedPrimary!!, normalizedBackup)
+                                val outcome = withContext(Dispatchers.IO) {
+                                    probeBoth(client, normalizedPrimary!!, normalizedBackup)
                                 }
-                                probeResult = version
+                                probeResult = outcome.version
+                                probePrimaryOk = outcome.primaryOk
+                                probeBackupOk = outcome.backupOk
+                                probeActiveUrl = outcome.activeUrl
                                 statusLine = null
                             } catch (e: ApiException) {
                                 error = e.message
@@ -218,8 +231,20 @@ fun HostLoginScreen(
             if (probeResult != null) {
                 VerticalGap(10.dp)
                 InlineNotice(
-                    text = "主机可达，Gitea 版本 $probeResult",
+                    text = "连接可用（Gitea $probeResult）：主地址${if (probePrimaryOk) "可达" else "不可达"}，备地址${
+                        when {
+                            normalizedBackup == null -> "未填写"
+                            probeBackupOk -> "可达"
+                            else -> "不可达"
+                        }
+                    }",
                     tone = palette.success
+                )
+                VerticalGap(6.dp)
+                androidx.compose.material3.Text(
+                    text = "登录时只保存探测通过的地址；不可达的地址不会写入，也不会与另一地址互相覆盖。",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = palette.textTertiary
                 )
             }
         }
@@ -255,7 +280,7 @@ fun HostLoginScreen(
                 value = username,
                 onValueChange = { username = it },
                 label = "账号",
-                placeholder = "minggit",
+                placeholder = "your-username",
                 leadingIcon = Icons.Filled.Person,
                 keyboardType = KeyboardType.Ascii,
                 imeAction = ImeAction.Next,
@@ -304,8 +329,10 @@ fun HostLoginScreen(
                                 authenticate(
                                     client = client,
                                     settings = settings,
-                                    url = probeActiveUrl ?: normalizedPrimary!!,
-                                    backupUrl = normalizedBackup,
+                                    activeUrl = probeActiveUrl ?: normalizedPrimary!!,
+                                    // 只保存探测通过的地址；主/备各自独立，互不覆盖
+                                    savePrimaryUrl = if (probePrimaryOk) normalizedPrimary else null,
+                                    saveBackupUrl = if (probeBackupOk) normalizedBackup else null,
                                     authMode = authMode,
                                     reauth = reauth,
                                     username = username.trim(),
@@ -373,32 +400,50 @@ private fun normalizeUrl(raw: String): String? {
     } else null
 }
 
-/** 探测：主 → 备（仅连接类失败切换，§5.2）。返回实际生效的地址。 */
-private var probeActiveUrl: String? = null
+/** 主/备各自独立探测结果：仅通过的地址允许落盘，二者互不覆盖。 */
+private data class ProbeOutcome(
+    val activeUrl: String,
+    val primaryOk: Boolean,
+    val backupOk: Boolean,
+    val version: String
+)
 
-private fun probeWithFallback(client: GiteaClient, primary: String, backup: String?): String {
-    probeActiveUrl = null
+/**
+ * 分别探测主地址与备地址（不再只探测"最终生效"的那个）：
+ * 主通过 → active=主；否则备通过 → active=备；两者都不通过则抛出主地址的异常。
+ * 主通过时仍会独立探测备地址，以便保存语义正确。
+ */
+private fun probeBoth(client: GiteaClient, primary: String, backup: String?): ProbeOutcome {
+    var primaryErr: ApiException? = null
+    var primaryOk = false
+    var version: String? = null
     try {
-        val v = client.probe(primary)
-        probeActiveUrl = primary
-        return v
+        version = client.probe(primary)
+        primaryOk = true
     } catch (e: ApiException) {
-        // 认证类失败不该发生在免认证探测上；仅连接/TLS 类失败尝试备地址
-        if (backup != null && e.kind in listOf(ErrKind.CONNECTION, ErrKind.TLS, ErrKind.SERVER)) {
-            val v = client.probe(backup)
-            probeActiveUrl = backup
-            return v
-        }
-        throw e
+        primaryErr = e
     }
+    var backupOk = false
+    var backupVersion: String? = null
+    if (backup != null) {
+        backupVersion = runCatching { client.probe(backup) }.getOrNull()
+        backupOk = backupVersion != null
+    }
+    val active = when {
+        primaryOk -> primary
+        backupOk && backup != null -> backup
+        else -> throw (primaryErr ?: ApiException(ErrKind.CONNECTION, "地址不可达"))
+    }
+    return ProbeOutcome(active, primaryOk, backupOk, version ?: backupVersion ?: "?")
 }
 
 /** 认证核心（P1/P6）：密码引导建 ro/rw 双令牌，或校验粘贴令牌，全部通过后落盘。 */
 private fun authenticate(
     client: GiteaClient,
     settings: SettingsStore,
-    url: String,
-    backupUrl: String?,
+    activeUrl: String,
+    savePrimaryUrl: String?,
+    saveBackupUrl: String?,
     authMode: AuthMode,
     reauth: Boolean,
     username: String,
@@ -421,16 +466,17 @@ private fun authenticate(
             val report: (String) -> Unit = { s -> onStatus("引导中：$s") }
 
             report("创建只读令牌")
-            roToken = createTokenWithRetry(client, url, username, password, roName,
+            roToken = createTokenWithRetry(client, activeUrl, username, password, roName,
                 listOf("read:repository", "read:user"))
 
             report("创建读写令牌")
-            rwToken = createTokenWithRetry(client, url, username, password, rwName,
-                listOf("read:repository", "write:repository", "read:user"))
+            // write:user：新建仓库 POST /user/repos 要求该 scope（write:repository 只覆盖已有仓库写操作）
+            rwToken = createTokenWithRetry(client, activeUrl, username, password, rwName,
+                listOf("read:repository", "write:repository", "write:user", "read:user"))
         }
         AuthMode.PASTE_TOKEN -> {
             onStatus("校验令牌")
-            client.verifyToken(url, pastedToken)
+            client.verifyToken(activeUrl, pastedToken)
             roToken = pastedToken
             rwToken = pastedToken
             roName = "pasted-token"
@@ -439,19 +485,20 @@ private fun authenticate(
     }
 
     onStatus("自校验令牌")
-    client.verifyToken(url, roToken)
+    client.verifyToken(activeUrl, roToken)
 
     // 全部成功才落盘（先令牌后配置；密码从未接触存储）
     onStatus("保存凭证")
     settings.roToken = roToken
     settings.rwToken = rwToken
-    settings.lastGoodUrl = url
+    settings.lastGoodUrl = activeUrl
 
     if (!reauth) {
         settings.host = HostConfig(
-            displayName = displayName.ifBlank { displayName0(url) },
-            primaryUrl = url,
-            backupUrl = backupUrl ?: "",
+            displayName = displayName.ifBlank { displayName0(activeUrl) },
+            // 主/备分离保存：未通过探测的地址不写入，绝不把备地址回填为主地址
+            primaryUrl = savePrimaryUrl.orEmpty(),
+            backupUrl = saveBackupUrl.orEmpty(),
             username = username,
             authMode = authMode,
             roTokenName = roName,
@@ -459,7 +506,7 @@ private fun authenticate(
             createdAt = System.currentTimeMillis()
         )
     } else {
-        // reauth：保留原主机配置，仅当用户改走粘贴令牌时更新认证方式元数据
+        // reauth：保留原主机配置（主备地址原样保留），仅当用户改走粘贴令牌时更新认证方式元数据
         settings.host = settings.host?.copy(authMode = authMode, roTokenName = roName, rwTokenName = rwName)
     }
 }

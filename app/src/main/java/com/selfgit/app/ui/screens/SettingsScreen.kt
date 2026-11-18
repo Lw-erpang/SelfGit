@@ -24,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +47,9 @@ import com.selfgit.app.ui.navigation.TrackNavBarScroll
 import com.selfgit.app.ui.theme.LocalPalette
 import com.selfgit.app.ui.theme.ThemeMode
 import androidx.compose.material3.Text
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 设置页（UI 文档 S5 的阶段 0 子集）：
@@ -59,8 +63,9 @@ fun SettingsScreen(
     onReset: () -> Unit
 ) {
     val palette = LocalPalette.current
-    val host = settings.host
+    var host by remember { mutableStateOf(settings.host) }
     var showResetDialog by remember { mutableStateOf(false) }
+    var showPrimaryEditor by remember { mutableStateOf(false) }
     var showBackupEditor by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
     TrackNavBarScroll(scroll)
@@ -99,16 +104,22 @@ fun SettingsScreen(
             VerticalGap(12.dp)
             Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)) {
                 com.selfgit.app.ui.components.MiniButton(
+                    text = if (host?.primaryUrl.isNullOrBlank()) "设置主地址" else "编辑主地址",
+                    onClick = { showPrimaryEditor = true },
+                    icon = Icons.Filled.Dns
+                )
+                com.selfgit.app.ui.components.MiniButton(
                     text = if (host?.backupUrl.isNullOrBlank()) "添加备用地址" else "编辑备用地址",
                     onClick = { showBackupEditor = true },
                     icon = Icons.Filled.Dns
                 )
-                com.selfgit.app.ui.components.MiniButton(
-                    text = "重新认证",
-                    onClick = onReauth,
-                    icon = Icons.Filled.Key
-                )
             }
+            VerticalGap(8.dp)
+            com.selfgit.app.ui.components.MiniButton(
+                text = "重新认证",
+                onClick = onReauth,
+                icon = Icons.Filled.Key
+            )
         }
 
         VerticalGap(16.dp)
@@ -178,13 +189,39 @@ fun SettingsScreen(
         VerticalGap(90.dp)
     }
 
-    // ---- 备用地址编辑弹窗 ----
+    // ---- 主地址编辑弹窗（独立保存，不影响备地址）----
+    if (showPrimaryEditor) {
+        UrlEditorDialog(
+            title = "主地址",
+            subtitle = "局域网 / 内网直连地址；主地址必填",
+            current = settings.host?.primaryUrl.orEmpty(),
+            allowEmpty = false,
+            placeholder = "http://192.168.x.x:3000",
+            helper = "保存前会探测连通性，仅可达地址会保存",
+            onSave = { normalized ->
+                settings.host?.let { h ->
+                    settings.host = h.copy(primaryUrl = normalized)
+                    host = settings.host
+                }
+                showPrimaryEditor = false
+            },
+            onDismiss = { showPrimaryEditor = false }
+        )
+    }
+
+    // ---- 备用地址编辑弹窗（独立保存，不影响主地址）----
     if (showBackupEditor) {
-        BackupUrlDialog(
+        UrlEditorDialog(
+            title = "备用地址",
+            subtitle = "主地址不可达时自动切换（如 DDNS HTTPS 外网域名）",
             current = settings.host?.backupUrl.orEmpty(),
+            allowEmpty = true,
+            placeholder = "https://gitea.example.com",
+            helper = "仅支持系统信任证书（如 Let's Encrypt）；保存前会探测连通性",
             onSave = { normalized ->
                 settings.host?.let { h ->
                     settings.host = h.copy(backupUrl = normalized)
+                    host = settings.host
                 }
                 showBackupEditor = false
             },
@@ -235,52 +272,96 @@ fun SettingsScreen(
     }
 }
 
-/** 备用地址编辑弹窗：主地址保持不变，仅补改备用地址。 */
+/**
+ * 地址编辑弹窗（主/备通用）：保存前独立探测该地址连通性，
+ * 仅探测通过的地址写入配置；主备互不影响（调用方只 copy 单个字段）。
+ * 备地址允许留空（= 清除配置，不需探测）。
+ */
 @Composable
-private fun BackupUrlDialog(
+private fun UrlEditorDialog(
+    title: String,
+    subtitle: String,
     current: String,
+    allowEmpty: Boolean,
+    placeholder: String,
+    helper: String,
     onSave: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val scope = rememberCoroutineScope()
+    val client = remember { com.selfgit.app.net.GiteaClient() }
     var text by remember { mutableStateOf(current) }
+    var probing by remember { mutableStateOf(false) }
+    var probeError by remember { mutableStateOf<String?>(null) }
+
     val normalized = text.trim().trimEnd('/').let {
         if (it.startsWith("http://") || it.startsWith("https://")) it else null
     }
-    val error = if (text.isNotBlank() && normalized == null)
+    val formatError = if (text.isNotBlank() && normalized == null)
         "地址格式无效（需 http:// 或 https:// 开头）" else null
+    val emptyError = if (!allowEmpty && text.isBlank()) "主地址不能为空" else null
+
+    fun save() {
+        // 留空清除（仅备地址）：不探测直接保存
+        if (text.isBlank() && allowEmpty) {
+            onSave("")
+            return
+        }
+        val target = normalized ?: return
+        scope.launch {
+            probing = true
+            probeError = null
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { client.probe(target) }.isSuccess
+            }
+            probing = false
+            if (ok) onSave(target)
+            else probeError = "该地址当前不可达，未保存。请检查地址与网络后重试（不可达地址不会覆盖现有配置）。"
+        }
+    }
 
     com.selfgit.app.ui.components.GlassAlertDialog(
-        onDismissRequest = onDismiss,
-        title = "备用地址",
+        onDismissRequest = { if (!probing) onDismiss() },
+        title = title,
         text = {
             Column {
-                Text(
-                    "主地址不可达时自动切换到备地址（如 DDNS HTTPS 外网域名）。",
-                    fontSize = 13.sp
-                )
+                Text(subtitle, fontSize = 13.sp)
                 Spacer(Modifier.height(12.dp))
                 com.selfgit.app.ui.components.GlassTextField(
                     value = text,
-                    onValueChange = { text = it },
-                    label = "备地址（留空则清除）",
-                    placeholder = "https://gitea.example.com",
+                    onValueChange = {
+                        text = it
+                        probeError = null
+                    },
+                    label = if (allowEmpty) "备地址（留空则清除）" else "主地址",
+                    placeholder = placeholder,
                     singleLine = true,
-                    error = error,
-                    helper = "仅支持系统信任证书（如 Let's Encrypt）"
+                    error = formatError ?: emptyError,
+                    helper = helper
                 )
+                if (probing) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("正在探测连通性…", fontSize = 12.sp, color = LocalPalette.current.textTertiary)
+                }
+                probeError?.let {
+                    Spacer(Modifier.height(10.dp))
+                    InlineNotice(text = it)
+                }
             }
         },
         confirmButton = {
             com.selfgit.app.ui.components.MiniButton(
-                text = "保存",
-                enabled = text.isBlank() || (normalized != null && error == null),
-                onClick = { onSave(text.trim().trimEnd('/')) }
+                text = if (probing) "探测中…" else "探测并保存",
+                enabled = !probing && formatError == null && emptyError == null &&
+                    (text.isBlank() && allowEmpty || normalized != null),
+                onClick = { save() }
             )
         },
         dismissButton = {
             com.selfgit.app.ui.components.MiniButton(
                 text = "取消",
-                onClick = onDismiss
+                onClick = onDismiss,
+                enabled = !probing
             )
         }
     )
@@ -430,6 +511,10 @@ private fun backendStatus(context: android.content.Context, type: InstallerType,
     }
 
 /** 第三方安装器选择对话框：枚举能处理安装意图的应用。 */
+
+/** 接管型安装器白名单（LSPosed hook 系统安装器，不注册 intent filter）。 */
+private val KNOWN_HOOK_INSTALLERS = listOf("com.modify.installer")
+
 @Composable
 private fun ThirdPartyPickerDialog(
     selected: String,
@@ -442,19 +527,31 @@ private fun ThirdPartyPickerDialog(
     val candidates = remember {
         val pm = context.packageManager
         val found = mutableMapOf<String, String>()
+        // 三类探测合并：部分安装器（如爱玩机）只注册带 content:// scheme 的 filter，
+        // Uri.EMPTY 探测不到；MATCH_ALL 关闭默认浏览器类 filter 限制
+        val apkType = "application/vnd.android.package-archive"
         listOf(
-            Intent(Intent.ACTION_INSTALL_PACKAGE),
+            Intent(Intent.ACTION_INSTALL_PACKAGE).apply { type = apkType },
+            Intent(Intent.ACTION_VIEW).apply { setDataAndType(Uri.EMPTY, apkType) },
             Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(Uri.EMPTY, "application/vnd.android.package-archive")
+                setDataAndType(Uri.parse("content://com.selfgit.app.probe/probe.apk"), apkType)
             }
         ).forEach { probe ->
-            runCatching { pm.queryIntentActivities(probe, 0) }
+            runCatching { pm.queryIntentActivities(probe, android.content.pm.PackageManager.MATCH_ALL) }
                 .getOrDefault(emptyList())
                 .forEach { ri ->
                     if (ri.activityInfo.packageName != context.packageName && ri.activityInfo.exported) {
                         found.putIfAbsent(ri.activityInfo.packageName, ri.loadLabel(pm).toString())
                     }
                 }
+        }
+        // 接管型安装器（LSPosed 模块）不注册安装 filter，intent 枚举看不到；
+        // 按已知包名白名单补充，已安装才显示
+        KNOWN_HOOK_INSTALLERS.forEach { pkg ->
+            if (pkg !in found && com.selfgit.app.net.ApkInstaller.installedVersion(context, pkg) != null) {
+                runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }
+                    .onSuccess { found.putIfAbsent(pkg, it) }
+            }
         }
         found.entries.sortedBy { it.value }
     }

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,6 +67,7 @@ import com.selfgit.app.ui.components.SectionRow
 import com.selfgit.app.ui.components.clickableNoRipple
 import com.selfgit.app.ui.navigation.TrackNavBarScroll
 import com.selfgit.app.ui.theme.LocalPalette
+import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -121,7 +124,9 @@ fun UploadScreen(
     client: GiteaClient,
     activeUrl: String?,
     history: com.selfgit.app.data.UploadHistoryStore,
-    onUploaded: () -> Unit
+    onUploaded: () -> Unit,
+    shareUri: Uri? = null,
+    onShareConsumed: () -> Unit = {}
 ) {
     val palette = LocalPalette.current
     val context = LocalContext.current
@@ -154,6 +159,9 @@ fun UploadScreen(
     // ---- 上传记录（本地持久化）----
     var records by remember { mutableStateOf(history.list()) }
 
+    // ---- 已装应用选择对话框 ----
+    var showAppPicker by remember { mutableStateOf(false) }
+
     fun recordResult(file: File, info: ApkInfo?, repo: GiteaRepo?, tag: String, ok: Boolean, msg: String) {
         history.add(
             com.selfgit.app.data.UploadHistoryStore.Record(
@@ -172,11 +180,9 @@ fun UploadScreen(
         records = history.list()
     }
 
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        // 重置全部后续状态
+    /** 清空表单回初始态（选新文件 / 取消上传 / 取消已选文件共用）。 */
+    fun resetForm() {
+        apkFile = null
         apkInfo = null
         parseError = null
         targetMode = TargetMode.NEW
@@ -184,36 +190,82 @@ fun UploadScreen(
         newRepoName = ""
         newRepoPrivate = true
         tagText = ""
+        changelog = CHANGELOG_TEMPLATE
         tagCheck = TagCheck.None
         upload = UploadUi.Idle
+        showCleanup = false
+        uploadedRepo = null
+        currentCall = null
+        cancelled = false
+    }
+
+    /** 解析并填充归属表单（协程内调用）。 */
+    suspend fun parseAndFill(dest: File) {
+        apkFile = dest
+        val info = withContext(Dispatchers.IO) { ApkInstaller.parse(context, dest) }
+        if (info == null) {
+            parseError = "无法读取应用信息：可能不是标准 APK"
+        } else {
+            apkInfo = info
+            val suggested = repos.firstOrNull {
+                tracking.get(it.fullName)?.packageName == info.packageName
+            }
+            // 追踪过该包名 → 默认放入已有仓库；否则默认新建仓库
+            if (suggested != null) {
+                targetMode = TargetMode.EXISTING
+                targetRepo = suggested
+            } else {
+                targetMode = TargetMode.NEW
+            }
+            newRepoName = defaultRepoName(info)
+            tagText = defaultTag(info)
+        }
+    }
+
+    fun handleUri(uri: Uri) {
+        resetForm()
+        onShareConsumed()
         scope.launch {
             try {
                 val dest = withContext(Dispatchers.IO) {
                     copyUriToCache(context, uri)
                 }
-                apkFile = dest
-                val info = withContext(Dispatchers.IO) { ApkInstaller.parse(context, dest) }
-                if (info == null) {
-                    parseError = "无法读取应用信息：可能不是标准 APK"
-                } else {
-                    apkInfo = info
-                    val suggested = repos.firstOrNull {
-                        tracking.get(it.fullName)?.packageName == info.packageName
-                    }
-                    // 追踪过该包名 → 默认放入已有仓库；否则默认新建仓库
-                    if (suggested != null) {
-                        targetMode = TargetMode.EXISTING
-                        targetRepo = suggested
-                    } else {
-                        targetMode = TargetMode.NEW
-                    }
-                    newRepoName = defaultRepoName(info)
-                    tagText = defaultTag(info)
-                }
+                parseAndFill(dest)
             } catch (e: Exception) {
                 parseError = "读取文件失败：${e.message ?: "未知错误"}"
             }
         }
+    }
+
+    /** 从已装应用上传：拷贝其 sourceDir（base.apk）到缓存后走统一解析链。 */
+    fun handleInstalledApp(sourceDir: String, label: String) {
+        resetForm()
+        showAppPicker = false
+        scope.launch {
+            try {
+                val dest = withContext(Dispatchers.IO) {
+                    val dir = File(context.cacheDir, "uploads").apply { mkdirs() }
+                    val target = File(dir, "$label.apk")
+                    File(sourceDir).copyTo(target, overwrite = true)
+                    target
+                }
+                parseAndFill(dest)
+            } catch (e: Exception) {
+                parseError = "读取应用安装包失败：${e.message ?: "未知错误"}（该应用可能为 Split APK，仅能提取 base.apk）"
+            }
+        }
+    }
+
+    // 系统分享（ACTION_SEND APK 流）注入：进入页面即自动装载
+    LaunchedEffect(shareUri) {
+        if (shareUri != null) handleUri(shareUri)
+    }
+
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        handleUri(uri)
     }
 
     // tag 查重（700ms 防抖）；新建仓库模式 tag 必然可用（auto_init 空库无 tag）
@@ -245,21 +297,6 @@ fun UploadScreen(
         } catch (_: ApiException) {
             tagCheck = TagCheck.None
         }
-    }
-
-    /** 清空表单回初始态（取消上传 / 取消已选文件共用）。 */
-    fun resetForm() {
-        apkFile = null
-        apkInfo = null
-        parseError = null
-        targetRepo = null
-        tagText = ""
-        changelog = CHANGELOG_TEMPLATE
-        tagCheck = TagCheck.None
-        upload = UploadUi.Idle
-        showCleanup = false
-        uploadedRepo = null
-        currentCall = null
     }
 
     /** 取消按钮：上传中 → 中断网络请求；空闲 → 清空表单。 */
@@ -460,6 +497,13 @@ fun UploadScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                         icon = Icons.Filled.CloudUpload
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    GhostButton(
+                        "从已装应用选择",
+                        onClick = { showAppPicker = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        icon = Icons.Filled.Android
                     )
                 }
             } else {
@@ -705,6 +749,14 @@ fun UploadScreen(
         Spacer(Modifier.height(26.dp))
     }
 
+    // ---- 已装应用选择弹窗 ----
+    if (showAppPicker) {
+        InstalledAppPickerDialog(
+            onPick = { app -> handleInstalledApp(app.sourceDir, app.label) },
+            onDismiss = { showAppPicker = false }
+        )
+    }
+
     // ---- 失败清理弹窗（P4 第 6 步）----
     if (showCleanup) {
         val failed = upload as? UploadUi.Failed
@@ -938,6 +990,204 @@ private fun TagCheckRow(check: TagCheck, tag: String) {
         )
         else -> {}
     }
+}
+
+/** 已装应用条目（对话框行）。 */
+private data class InstalledApp(
+    val label: String,
+    val packageName: String,
+    val versionName: String?,
+    val sourceDir: String,
+    val icon: androidx.compose.ui.graphics.ImageBitmap?
+)
+
+/**
+ * 已装应用选择对话框：列出非系统应用（可切换显示系统应用），
+ * 选中后提取其 base.apk（sourceDir）上传。Split APK 应用仅能提取 base 包。
+ */
+@Composable
+private fun InstalledAppPickerDialog(
+    onPick: (InstalledApp) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val palette = LocalPalette.current
+    var includeSystem by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+
+    val apps = remember(includeSystem) {
+        val pm = context.packageManager
+        runCatching {
+            pm.getInstalledPackages(android.content.pm.PackageManager.GET_META_DATA)
+                .mapNotNull { pi ->
+                    val ai = pi.applicationInfo ?: return@mapNotNull null
+                    val label = runCatching { ai.loadLabel(pm).toString() }.getOrNull() ?: return@mapNotNull null
+                    val isSystem = (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                    if (!includeSystem && isSystem) return@mapNotNull null
+                    if (pi.packageName == context.packageName) return@mapNotNull null
+                    val icon = runCatching {
+                        ai.loadIcon(pm).toBitmap(96, 96).asImageBitmap()
+                    }.getOrNull()
+                    InstalledApp(
+                        label = label,
+                        packageName = pi.packageName,
+                        versionName = pi.versionName,
+                        sourceDir = ai.sourceDir ?: return@mapNotNull null,
+                        icon = icon
+                    )
+                }
+                .sortedBy { it.label.lowercase() }
+        }.getOrDefault(emptyList())
+    }
+
+    com.selfgit.app.ui.components.GlassAlertDialog(
+        onDismissRequest = onDismiss,
+        title = "从已装应用选择",
+        text = {
+            Column {
+                // 搜索框（紧凑样式）
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(palette.fieldFill)
+                        .border(1.dp, palette.fieldBorder, RoundedCornerShape(14.dp))
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = null,
+                        tint = palette.textTertiary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontSize = 13.5.sp,
+                            color = palette.textPrimary
+                        ),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(palette.primary),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = 10.dp),
+                        decorationBox = { inner ->
+                            if (query.isEmpty()) {
+                                Text("搜索应用名或包名", fontSize = 13.5.sp, color = palette.textTertiary)
+                            }
+                            inner()
+                        }
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ChoiceChip(
+                        "含系统应用",
+                        selected = includeSystem,
+                        onClick = { includeSystem = !includeSystem }
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "共 ${apps.size} 个",
+                        fontSize = 11.sp,
+                        color = palette.textTertiary
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+
+                if (apps.isEmpty()) {
+                    Text(
+                        "未获取到应用列表：请在系统设置中允许 SelfGit「获取应用列表」权限\n（MIUI：设置 → 应用设置 → 应用管理 → SelfGit → 权限管理 → 获取应用列表 → 允许）",
+                        fontSize = 12.sp,
+                        color = palette.danger
+                    )
+                } else {
+                    val filtered = if (query.isBlank()) apps else apps.filter {
+                        it.label.contains(query, ignoreCase = true) ||
+                            it.packageName.contains(query, ignoreCase = true)
+                    }
+                    if (filtered.isEmpty()) {
+                        Text(
+                            "没有匹配的应用",
+                            fontSize = 12.sp,
+                            color = palette.textTertiary,
+                            modifier = Modifier.padding(vertical = 14.dp)
+                        )
+                    }
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier.height(340.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        items(filtered.size) { i ->
+                            val app = filtered[i]
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickableNoRipple { onPick(app) }
+                                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // 应用图标（无图标时占位）
+                                if (app.icon != null) {
+                                    androidx.compose.foundation.Image(
+                                        bitmap = app.icon,
+                                        contentDescription = null,
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(RoundedCornerShape(9.dp))
+                                    )
+                                } else {
+                                    Box(
+                                        Modifier
+                                            .size(34.dp)
+                                            .clip(RoundedCornerShape(9.dp))
+                                            .background(palette.primary.copy(alpha = 0.14f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.Android,
+                                            contentDescription = null,
+                                            tint = palette.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        app.label,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = palette.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        app.packageName,
+                                        fontSize = 10.5.sp,
+                                        color = palette.textTertiary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                if (!app.versionName.isNullOrBlank()) {
+                                    GlassBadge("v${app.versionName}")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            com.selfgit.app.ui.components.MiniButton("关闭", onClick = onDismiss)
+        }
+    )
 }
 
 // ---- 辅助 ----
