@@ -18,6 +18,7 @@ AI 时代人人都能手搓几个小应用，但应用一多、时间一久，�
   <img src="docs/screenshots/repo-detail.png" width="200" alt="仓库详情"/>
   <img src="docs/screenshots/release-notes.png" width="200" alt="版本与更新说明"/>
   <img src="docs/screenshots/upload.png" width="200" alt="上传页"/>
+  <img src="docs/screenshots/upload-app.jpg" width="200" alt="从已装应用提取上传"/>
   <br/>
   <img src="docs/screenshots/settings.png" width="200" alt="设置页"/>
   <img src="docs/screenshots/readme-render.png" width="200" alt="README 渲染"/>
@@ -154,6 +155,12 @@ SelfGit/
 与本机已装应用的签名不同，需先卸载旧版；安装前弹窗会明确警示。
 
 ## 版本信息
+
+### v0.1.6（2026-11-19）
+
+- Markdown 渲染增强：修复粗体/斜体内嵌链接未渲染，新增表格渲染（表头/斑马纹/边框），内联 HTML 降级处理
+- 登录页「创建令牌并登录」按钮占满宽度
+- README 新增界面预览
 
 ### v0.1.5（2026-11-18）
 

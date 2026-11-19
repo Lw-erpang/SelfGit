@@ -13,8 +13,8 @@ android {
         applicationId = "com.selfgit.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.5"
+        versionCode = 3
+        versionName = "0.1.6"
     }
 
     buildTypes {
