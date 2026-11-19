@@ -365,6 +365,7 @@ fun HostLoginScreen(
                 VerticalGap(10.dp)
                 GhostButton(
                     text = "去 Gitea 网页端生成令牌",
+                    modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         runCatching {
                             context.startActivity(
