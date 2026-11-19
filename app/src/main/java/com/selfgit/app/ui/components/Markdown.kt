@@ -173,6 +173,51 @@ fun MarkdownText(
                     )
                 }
 
+                is MdBlock.Table -> Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(9.dp))
+                        .border(1.dp, palette.fieldBorder, RoundedCornerShape(9.dp))
+                ) {
+                    val cols = block.header.size
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(palette.fieldFill)
+                            .padding(horizontal = 10.dp, vertical = 7.dp)
+                    ) {
+                        block.header.forEach { cell ->
+                            Text(
+                                text = inline(cell, palette),
+                                color = palette.textPrimary,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    block.rows.forEachIndexed { rIdx, row ->
+                        HairLine()
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(if (rIdx % 2 == 1) palette.fieldFill.copy(alpha = 0.45f) else Color.Transparent)
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            repeat(cols) { c ->
+                                Text(
+                                    text = inline(row.getOrElse(c) { "" }, palette),
+                                    color = baseColor,
+                                    fontSize = 10.5.sp,
+                                    lineHeight = 14.5.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+
                 MdBlock.Rule -> HairLine()
             }
         }
@@ -188,6 +233,7 @@ private sealed interface MdBlock {
     data class Ordered(val number: String, val text: String) : MdBlock
     data class Quote(val text: String) : MdBlock
     data class Code(val lang: String, val code: String) : MdBlock
+    data class Table(val header: List<String>, val rows: List<List<String>>) : MdBlock
     data object Rule : MdBlock
 }
 
@@ -195,15 +241,43 @@ private val HEADING = Regex("^(#{1,6})\\s+(.*)$")
 private val BULLET = Regex("^[-*+]\\s+(.*)$")
 private val ORDERED = Regex("^(\\d{1,3})[.)]\\s+(.*)$")
 private val RULE = Regex("^(-{3,}|\\*{3,}|_{3,})$")
+private val TABLE_SEP = Regex("^\\|?[\\s:|-]+\\|?$")
+
+private fun splitTableRow(line: String): List<String> {
+    var s = line.trim()
+    if (s.startsWith("|")) s = s.substring(1)
+    if (s.endsWith("|")) s = s.dropLast(1)
+    return s.split('|').map { it.trim() }
+}
 
 private val IMAGE = Regex("!\\[([^\\]]*)]\\([^)\\s]+\\)")
+private val HTML_IMG = Regex("<img[^>]*?alt\\s*=\\s*\"([^\"]*)\"[^>]*/?>", RegexOption.IGNORE_CASE)
+private val HTML_A = Regex("<a[^>]*?href\\s*=\\s*\"([^\"]+)\"[^>]*>(.*?)</a>", RegexOption.IGNORE_CASE)
+private val HTML_TAG = Regex("</?[a-zA-Z][^>]*>")
+private val HTML_ENTITY = Regex("&(amp|lt|gt|quot|nbsp);")
+
+private fun cleanHtml(src: String): String {
+    var s = src
+    // <img alt="x"> → alt 文本（无 alt 则移除）
+    s = HTML_IMG.replace(s) { m -> m.groupValues[1].trim() }
+    // <a href="url">text</a> → [text](url)，交给链接渲染
+    s = HTML_A.replace(s) { m -> "[${m.groupValues[2]}](${m.groupValues[1]})" }
+    // 其余标签（<p align=...>、<br>、<div>、徽章 span 等）直接移除
+    s = HTML_TAG.replace(s, " ")
+    // 常见 HTML 实体
+    s = HTML_ENTITY.replace(s) { m ->
+        when (m.groupValues[1]) {
+            "amp" -> "&"; "lt" -> "<"; "gt" -> ">"; "quot" -> "\""; else -> " "
+        }
+    }
+    return s.replace(IMAGE, "$1 ")
+}
 
 private fun parseMarkdown(src: String): List<MdBlock> {
     val out = mutableListOf<MdBlock>()
-    // README 常含徽章/截图图片语法（![alt](url)）：无图渲染时降级为 alt 文本，
-    // 避免 "![" 残留；链接 [label](url) 仍走行内样式。
-    val cleaned = src.replace(IMAGE, "$1 ")
-    val lines = cleaned.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+    // README 常含内联 HTML（居中段落、徽章 img、<a> 链接）：降级为纯 Markdown 再解析。
+    val cleaned = cleanHtml(src.replace("\r\n", "\n").replace('\r', '\n'))
+    val lines = cleaned.split('\n')
     val para = StringBuilder()
 
     fun flush() {
@@ -273,6 +347,21 @@ private fun parseMarkdown(src: String): List<MdBlock> {
                 out += MdBlock.Ordered(m.groupValues[1], m.groupValues[2].trim())
             }
 
+            // 表格：本行以 | 开头，且下一行是 |---|---| 分隔行
+            trimmed.startsWith("|") && i + 1 < lines.size &&
+                lines[i + 1].trim().let { it.contains('-') && TABLE_SEP.matches(it) } -> {
+                flush()
+                val header = splitTableRow(trimmed)
+                i += 2
+                val rows = mutableListOf<List<String>>()
+                while (i < lines.size && lines[i].trim().startsWith("|")) {
+                    rows += splitTableRow(lines[i])
+                    i++
+                }
+                out += MdBlock.Table(header, rows)
+                continue
+            }
+
             else -> {
                 if (para.isNotEmpty()) para.append(' ')
                 para.append(trimmed)
@@ -292,18 +381,28 @@ private val INLINE_TOKEN = Regex(
 
 @Composable
 private fun inline(text: String, palette: SelfGitPalette): AnnotatedString =
-    remember(text, palette) { buildInline(text, palette) }
+    remember(text, palette) { buildAnnotatedString { appendTokens(text, palette, emptyList(), 0) } }
 
-private fun buildInline(text: String, palette: SelfGitPalette): AnnotatedString = buildAnnotatedString {
-    val codeStyle = SpanStyle(
-        fontFamily = FontFamily.Monospace,
-        color = palette.primary,
-        background = palette.primary.copy(alpha = 0.10f)
-    )
+/**
+ * 递归解析行内 token，outerStyles 为外层累积的样式（如「粗体里套链接」「粗体套斜体」）。
+ * 链接保持可点击，同时叠加外层样式；depth 限制防病态输入。
+ */
+private fun AnnotatedString.Builder.appendTokens(
+    text: String,
+    palette: SelfGitPalette,
+    outerStyles: List<SpanStyle>,
+    depth: Int
+) {
+    if (depth > 4) {
+        appendWithStyles(text, outerStyles)
+        return
+    }
     var cursor = 0
 
     INLINE_TOKEN.findAll(text).forEach { match ->
-        if (match.range.first > cursor) append(text.substring(cursor, match.range.first))
+        if (match.range.first > cursor) {
+            appendWithStyles(text.substring(cursor, match.range.first), outerStyles)
+        }
         val token = match.value
         when {
             // [label](url)
@@ -312,6 +411,7 @@ private fun buildInline(text: String, palette: SelfGitPalette): AnnotatedString 
                 val label = token.substring(1, split)
                 val url = token.substring(split + 2, token.length - 1)
                 if (url.startsWith("http://") || url.startsWith("https://")) {
+                    val start = length
                     withLink(
                         LinkAnnotation.Url(
                             url,
@@ -323,27 +423,48 @@ private fun buildInline(text: String, palette: SelfGitPalette): AnnotatedString 
                             )
                         )
                     ) { append(label) }
+                    // 外层样式（粗体等）叠加到链接文字上
+                    outerStyles.forEach { addStyle(it, start, length) }
                 } else {
-                    append(label)
+                    appendWithStyles(label, outerStyles)
                 }
             }
 
-            token.startsWith("`") -> appendStyled(token.trim('`'), codeStyle)
+            token.startsWith("`") ->
+                appendWithStyles(
+                    token.trim('`'),
+                    outerStyles + SpanStyle(
+                        fontFamily = FontFamily.Monospace,
+                        color = palette.primary,
+                        background = palette.primary.copy(alpha = 0.10f)
+                    )
+                )
+
             token.startsWith("**") || token.startsWith("__") ->
-                appendStyled(token.drop(2).dropLast(2), SpanStyle(fontWeight = FontWeight.Bold))
+                appendTokens(
+                    token.drop(2).dropLast(2), palette,
+                    outerStyles + SpanStyle(fontWeight = FontWeight.Bold), depth + 1
+                )
 
             token.startsWith("~~") ->
-                appendStyled(token.drop(2).dropLast(2), SpanStyle(textDecoration = TextDecoration.LineThrough))
+                appendTokens(
+                    token.drop(2).dropLast(2), palette,
+                    outerStyles + SpanStyle(textDecoration = TextDecoration.LineThrough), depth + 1
+                )
 
-            else -> appendStyled(token.drop(1).dropLast(1), SpanStyle(fontStyle = FontStyle.Italic))
+            else ->
+                appendTokens(
+                    token.drop(1).dropLast(1), palette,
+                    outerStyles + SpanStyle(fontStyle = FontStyle.Italic), depth + 1
+                )
         }
         cursor = match.range.last + 1
     }
-    if (cursor < text.length) append(text.substring(cursor))
+    if (cursor < text.length) appendWithStyles(text.substring(cursor), outerStyles)
 }
 
-private fun AnnotatedString.Builder.appendStyled(text: String, style: SpanStyle) {
+private fun AnnotatedString.Builder.appendWithStyles(text: String, styles: List<SpanStyle>) {
     val start = length
     append(text)
-    addStyle(style, start, length)
+    styles.forEach { addStyle(it, start, length) }
 }

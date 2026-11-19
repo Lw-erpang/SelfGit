@@ -315,6 +315,7 @@ fun HostLoginScreen(
 
             VerticalGap(16.dp)
             PrimaryButton(
+                modifier = Modifier.fillMaxWidth(),
                 text = when {
                     working -> statusLine ?: "处理中…"
                     authMode == AuthMode.PASSWORD_BOOTSTRAP -> "创建令牌并登录"

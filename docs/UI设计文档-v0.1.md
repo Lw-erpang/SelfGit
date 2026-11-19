@@ -213,7 +213,7 @@
 | `ScreenHeader` | components | 一级页头：大标题 + `titleTrailing` 插槽（搜索入口等） |
 | `DetailTopBar` | screens | 二级页固定页头：玻璃渐变 + 圆形返回 + 标题/副标题 + 右侧徽章槽 |
 | `FloatingNavBar` + `NavBarController` | navigation | 悬浮胶囊导航：滚动显隐（±22px）、固定宽度条目、切页复位 |
-| `MarkdownText` | components | 自研轻量 Markdown 渲染（见第 6 章） |
+| `MarkdownText` | components | 零依赖自制 Markdown 渲染（见第 6 章） |
 | `ElasticScroll` | components | 弹性过度滚动 Modifier |
 | 徽章 / FlowRow 行 | screens | 全圆角徽章：success / accent / 蓝 / 中性；徽章行用 FlowRow 自动换行防挤压 |
 
@@ -221,7 +221,7 @@
 
 ## 6. Markdown 渲染规范
 
-`MarkdownText` 为零依赖自研实现，当前支持：
+`MarkdownText` 为零依赖自制实现，当前支持：
 
 - 标题（1~6 级）、无序 / 有序列表（含任务项）、代码块、引用、分割线
 - **粗体**、*斜体*、~~删除线~~、`行内代码`

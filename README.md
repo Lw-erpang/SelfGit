@@ -11,6 +11,19 @@ AI 时代人人都能手搓几个小应用，但应用一多、时间一久，�
 
 手机上某个软件当前版本用得很顺手，怕哪天升级后体验变差？用 SelfGit 备份手机应用，想用哪个版本，自己说了算。
 
+## 界面预览
+
+<p align="center">
+  <img src="docs/screenshots/home.png" width="200" alt="仓库主页"/>
+  <img src="docs/screenshots/repo-detail.png" width="200" alt="仓库详情"/>
+  <img src="docs/screenshots/release-notes.png" width="200" alt="版本与更新说明"/>
+  <img src="docs/screenshots/upload.png" width="200" alt="上传页"/>
+  <br/>
+  <img src="docs/screenshots/settings.png" width="200" alt="设置页"/>
+  <img src="docs/screenshots/readme-render.png" width="200" alt="README 渲染"/>
+  <img src="docs/screenshots/login.png" width="200" alt="登录页"/>
+</p>
+
 ## 参考项目
 
 本项目为**独立实现**，未复制任何参考项目的源码，仅在其思路上受启发：
