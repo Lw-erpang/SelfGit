@@ -72,7 +72,7 @@ AI 时代人人都能手搓几个小应用，但应用一多、时间一久，�
 ## 安装与运行
 
 ```bash
-git clone <本仓库地址>
+git clone https://github.com/Lw-erpang/SelfGit.git
 cd SelfGit
 ./gradlew :app:assembleDebug     # 产物: app/build/outputs/apk/debug/app-debug.apk
 ./gradlew :app:assembleRelease   # release 签名包
