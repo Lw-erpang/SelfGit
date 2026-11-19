@@ -1,5 +1,6 @@
 package com.selfgit.app.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -15,7 +16,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,7 +49,8 @@ import com.selfgit.app.ui.theme.SelfGitPalette
 fun MarkdownText(
     markdown: String,
     modifier: Modifier = Modifier,
-    color: Color? = null
+    color: Color? = null,
+    imageLoader: (suspend (String) -> ByteArray?)? = null
 ) {
     val palette = LocalPalette.current
     val baseColor = color ?: palette.textSecondary
@@ -218,8 +224,84 @@ fun MarkdownText(
                     }
                 }
 
+                is MdBlock.Image -> MarkdownImage(
+                    url = block.url,
+                    alt = block.alt,
+                    palette = palette,
+                    imageLoader = imageLoader
+                )
+
                 MdBlock.Rule -> HairLine()
             }
+        }
+    }
+}
+
+// ---- 图片渲染 ----
+
+/** 会话级内存缓存：同一 URL 只下载一次。 */
+private val imageCache = java.util.concurrent.ConcurrentHashMap<String, android.graphics.Bitmap>()
+
+private sealed interface ImgState {
+    data object Loading : ImgState
+    data object Failed : ImgState
+    data class Ok(val bitmap: androidx.compose.ui.graphics.ImageBitmap) : ImgState
+}
+
+@Composable
+private fun MarkdownImage(
+    url: String,
+    alt: String,
+    palette: SelfGitPalette,
+    imageLoader: (suspend (String) -> ByteArray?)?
+) {
+    // 无加载器（历史调用）或纯装饰图：降级为 alt 文本
+    if (imageLoader == null || url.isBlank()) {
+        Text(alt.ifBlank { "[图片]" }, fontSize = 12.sp, color = palette.textTertiary)
+        return
+    }
+
+    val state = produceState<ImgState>(initialValue = ImgState.Loading, key1 = url) {
+        imageCache[url]?.let {
+            value = ImgState.Ok(it.asImageBitmap())
+            return@produceState
+        }
+        val bytes = runCatching { imageLoader(url) }.getOrNull()
+        val bmp = bytes?.let {
+            runCatching { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size) }.getOrNull()
+        }
+        value = if (bmp != null) {
+            imageCache[url] = bmp
+            ImgState.Ok(bmp.asImageBitmap())
+        } else {
+            ImgState.Failed
+        }
+    }
+
+    when (val s = state.value) {
+        is ImgState.Ok -> Image(
+            bitmap = s.bitmap,
+            contentDescription = alt.ifBlank { "图片" },
+            modifier = Modifier.fillMaxWidth(),
+            contentScale = ContentScale.FillWidth
+        )
+
+        ImgState.Failed -> Text(
+            alt.ifBlank { "[图片加载失败]" },
+            fontSize = 12.sp,
+            color = palette.textTertiary
+        )
+
+        ImgState.Loading -> Box(
+            Modifier
+                .fillMaxWidth()
+                .height(150.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(palette.fieldFill)
+                .border(1.dp, palette.fieldBorder, RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("图片加载中…", fontSize = 12.sp, color = palette.textTertiary)
         }
     }
 }
@@ -234,6 +316,7 @@ private sealed interface MdBlock {
     data class Quote(val text: String) : MdBlock
     data class Code(val lang: String, val code: String) : MdBlock
     data class Table(val header: List<String>, val rows: List<List<String>>) : MdBlock
+    data class Image(val alt: String, val url: String) : MdBlock
     data object Rule : MdBlock
 }
 
@@ -251,15 +334,22 @@ private fun splitTableRow(line: String): List<String> {
 }
 
 private val IMAGE = Regex("!\\[([^\\]]*)]\\([^)\\s]+\\)")
-private val HTML_IMG = Regex("<img[^>]*?alt\\s*=\\s*\"([^\"]*)\"[^>]*/?>", RegexOption.IGNORE_CASE)
+private val HTML_IMG_SRC = Regex("<img[^>]*?src\\s*=\\s*\"([^\"]+)\"[^>]*>", RegexOption.IGNORE_CASE)
+private val HTML_IMG_ALT = Regex("<img[^>]*?alt\\s*=\\s*\"([^\"]*)\"[^>]*/?>", RegexOption.IGNORE_CASE)
 private val HTML_A = Regex("<a[^>]*?href\\s*=\\s*\"([^\"]+)\"[^>]*>(.*?)</a>", RegexOption.IGNORE_CASE)
 private val HTML_TAG = Regex("</?[a-zA-Z][^>]*>")
 private val HTML_ENTITY = Regex("&(amp|lt|gt|quot|nbsp);")
+private val PURE_IMAGE = Regex("^!\\[([^\\]]*)]\\(([^)\\s]+)\\)\\s*$")
 
 private fun cleanHtml(src: String): String {
     var s = src
-    // <img alt="x"> → alt 文本（无 alt 则移除）
-    s = HTML_IMG.replace(s) { m -> m.groupValues[1].trim() }
+    // <img src="x" alt="y"> → ![alt](src)，交给图片块渲染（无 src 则降级 alt 文本）
+    s = HTML_IMG_SRC.replace(s) { m ->
+        val imgTag = m.value
+        val src = m.groupValues[1]
+        val alt = HTML_IMG_ALT.find(imgTag)?.groupValues?.get(1)?.trim().orEmpty()
+        "![$alt]($src)"
+    }
     // <a href="url">text</a> → [text](url)，交给链接渲染
     s = HTML_A.replace(s) { m -> "[${m.groupValues[2]}](${m.groupValues[1]})" }
     // 其余标签（<p align=...>、<br>、<div>、徽章 span 等）直接移除
@@ -270,7 +360,7 @@ private fun cleanHtml(src: String): String {
             "amp" -> "&"; "lt" -> "<"; "gt" -> ">"; "quot" -> "\""; else -> " "
         }
     }
-    return s.replace(IMAGE, "$1 ")
+    return s
 }
 
 private fun parseMarkdown(src: String): List<MdBlock> {
@@ -292,6 +382,13 @@ private fun parseMarkdown(src: String): List<MdBlock> {
         val raw = lines[i]
         val trimmed = raw.trim()
         when {
+            // 独立成行的图片 → 图片块（App 内实际加载渲染）
+            PURE_IMAGE.matches(trimmed) -> {
+                flush()
+                val m = PURE_IMAGE.find(trimmed)!!
+                out += MdBlock.Image(m.groupValues[1], m.groupValues[2])
+            }
+
             // 代码块
             trimmed.startsWith("```") -> {
                 flush()
@@ -364,7 +461,8 @@ private fun parseMarkdown(src: String): List<MdBlock> {
 
             else -> {
                 if (para.isNotEmpty()) para.append(' ')
-                para.append(trimmed)
+                // 段落内联图片（如徽章行）降级为 alt 文本，避免 "![" 残留
+                para.append(trimmed.replace(IMAGE, "$1 "))
             }
         }
         i++

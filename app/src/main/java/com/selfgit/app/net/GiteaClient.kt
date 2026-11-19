@@ -282,6 +282,48 @@ class GiteaClient {
      * 需先取元数据中的 browser_download_url（/attachments/{uuid}），再下载该地址。
      * dest 必须在 App 专属目录（免存储权限）。失败时删除半成品文件。
      */
+    /**
+     * 拉取仓库内文件的原始字节（raw endpoint），供 README 图片渲染。
+     * @param path 仓库内相对路径（如 docs/screenshots/a.png）；ref 为分支/提交，空取默认分支
+     */
+    fun fetchRepoFileBytes(
+        url: String,
+        token: String,
+        owner: String,
+        repo: String,
+        path: String,
+        ref: String? = null
+    ): ByteArray? {
+        val sb = StringBuilder("$url/api/v1/repos/$owner/$repo/raw/").append(path.trimStart('/'))
+        ref?.let { sb.append("?ref=").append(java.net.URLEncoder.encode(it, "UTF-8")) }
+        val req = Request.Builder()
+            .url(sb.toString())
+            .header("Authorization", "token $token")
+            .build()
+        return try {
+            base.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) null else resp.body?.bytes()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 拉取任意 URL 的字节；同源（baseUrl 前缀）时附带令牌以支持私库，跨源匿名。 */
+    fun fetchUrlBytes(url: String, baseUrl: String?, token: String?): ByteArray? {
+        val builder = Request.Builder().url(url)
+        if (baseUrl != null && token != null && url.startsWith(baseUrl)) {
+            builder.header("Authorization", "token $token")
+        }
+        return try {
+            base.newCall(builder.build()).execute().use { resp ->
+                if (!resp.isSuccessful) null else resp.body?.bytes()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun downloadAsset(
         url: String,
         token: String,

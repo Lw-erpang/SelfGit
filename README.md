@@ -14,15 +14,8 @@ AI 时代人人都能手搓几个小应用，但应用一多、时间一久，�
 ## 界面预览
 
 <p align="center">
-  <img src="docs/screenshots/home.png" width="200" alt="仓库主页"/>
-  <img src="docs/screenshots/repo-detail.png" width="200" alt="仓库详情"/>
-  <img src="docs/screenshots/release-notes.png" width="200" alt="版本与更新说明"/>
-  <img src="docs/screenshots/upload.png" width="200" alt="上传页"/>
-  <img src="docs/screenshots/upload-app.jpg" width="200" alt="从已装应用提取上传"/>
-  <br/>
-  <img src="docs/screenshots/settings.png" width="200" alt="设置页"/>
-  <img src="docs/screenshots/readme-render.png" width="200" alt="README 渲染"/>
-  <img src="docs/screenshots/login.png" width="200" alt="登录页"/>
+  <img src="docs/screenshots/preview-1.png" width="49%" alt="登录 / 仓库主页 / 仓库详情"/>
+  <img src="docs/screenshots/preview-2.png" width="49%" alt="版本管理 / 上传 / 设置"/>
 </p>
 
 ## 参考项目

@@ -465,7 +465,21 @@ fun SelfGitApp() {
                                     reDownload(repo, release, asset.id, asset.name)
                                 },
                                 onInstall = { file -> installApk(file) },
-                                resolveIcon = { repo -> resolveRepoIcon(repo) }
+                                resolveIcon = { repo -> resolveRepoIcon(repo) },
+                                // README 图片：相对路径走仓库 raw 端点（带令牌支持私库），绝对 URL 同源带令牌
+                                imageLoader = { ref ->
+                                    withContext(Dispatchers.IO) {
+                                        val url = activeUrl
+                                        val token = settings.roToken
+                                        if (url == null || token == null) {
+                                            null
+                                        } else if (ref.startsWith("http://") || ref.startsWith("https://")) {
+                                            client.fetchUrlBytes(ref, url, token)
+                                        } else {
+                                            client.fetchRepoFileBytes(url, token, repo.owner, repo.name, ref)
+                                        }
+                                    }
+                                }
                             )
                         } else {
                             when (tab) {

@@ -107,7 +107,8 @@ fun ReleaseListScreen(
     onDownload: (GiteaRelease, GiteaAsset) -> Unit,
     onRetry: (GiteaRelease, GiteaAsset) -> Unit,
     onInstall: (File) -> Unit,
-    resolveIcon: (suspend (GiteaRepo) -> File?)? = null
+    resolveIcon: (suspend (GiteaRepo) -> File?)? = null,
+    imageLoader: (suspend (String) -> ByteArray?)? = null
 ) {
     val palette = LocalPalette.current
     val detailScroll = rememberScrollState()
@@ -161,7 +162,8 @@ fun ReleaseListScreen(
                 readmeLoading = readmeLoading,
                 readmeError = readmeError,
                 scroll = detailScroll,
-                resolveIcon = resolveIcon
+                resolveIcon = resolveIcon,
+                imageLoader = imageLoader
             )
 
             RepoSection.RELEASES -> ReleasesSection(
@@ -234,7 +236,8 @@ private fun DetailSection(
     readmeLoading: Boolean,
     readmeError: String?,
     scroll: ScrollState,
-    resolveIcon: (suspend (GiteaRepo) -> File?)? = null
+    resolveIcon: (suspend (GiteaRepo) -> File?)? = null,
+    imageLoader: (suspend (String) -> ByteArray?)? = null
 ) {
     val palette = LocalPalette.current
     val context = LocalContext.current
@@ -413,7 +416,10 @@ private fun DetailSection(
                     color = palette.textTertiary
                 )
 
-                else -> MarkdownText(markdown = readme.content)
+                else -> MarkdownText(
+                    markdown = readme.content,
+                    imageLoader = imageLoader
+                )
             }
         }
         VerticalGap(96.dp)
